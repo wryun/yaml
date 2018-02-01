@@ -196,6 +196,7 @@ func (p *parser) scalar() *node {
 
 func (p *parser) sequence() *node {
 	n := p.node(sequenceNode)
+	n.tag = string(p.event.tag)
 	p.anchor(n, p.event.anchor)
 	p.expect(yaml_SEQUENCE_START_EVENT)
 	for p.peek() != yaml_SEQUENCE_END_EVENT {
@@ -207,6 +208,7 @@ func (p *parser) sequence() *node {
 
 func (p *parser) mapping() *node {
 	n := p.node(mappingNode)
+	n.tag = string(p.event.tag)
 	p.anchor(n, p.event.anchor)
 	p.expect(yaml_MAPPING_START_EVENT)
 	for p.peek() != yaml_MAPPING_END_EVENT {
@@ -220,11 +222,12 @@ func (p *parser) mapping() *node {
 // Decoder, unmarshals a node into a provided value.
 
 type decoder struct {
-	doc     *node
-	aliases map[*node]bool
-	mapType reflect.Type
-	terrors []string
-	strict  bool
+	doc                   *node
+	aliases               map[*node]bool
+	mapType               reflect.Type
+	terrors               []string
+	strict                bool
+	customTagUnmarshalers map[string]CustomTagUnmarshaler
 }
 
 var (
@@ -237,8 +240,12 @@ var (
 	mergeTagType   = reflect.TypeOf(MergeTag)
 )
 
-func newDecoder(strict bool) *decoder {
-	d := &decoder{mapType: defaultMapType, strict: strict}
+func newDecoder(strict bool, customTagUnmarshalers map[string]CustomTagUnmarshaler) *decoder {
+	d := &decoder{
+		mapType:               defaultMapType,
+		strict:                strict,
+		customTagUnmarshalers: customTagUnmarshalers,
+	}
 	d.aliases = make(map[*node]bool)
 	return d
 }
@@ -280,6 +287,33 @@ func (d *decoder) callUnmarshaler(n *node, u Unmarshaler) (good bool) {
 	return true
 }
 
+func (d *decoder) callCustomTagUnmarshaler(n *node, u CustomTagUnmarshaler) (result interface{}, good bool) {
+	terrlen := len(d.terrors)
+	result, err := u.UnmarshalYAML(func(v interface{}) (err error) {
+		defer handleErr(&err)
+		// We need to lose the custom tag (otherwise we keep
+		// trying to process it ourselves).
+		fakeNode := *n
+		fakeNode.tag = ""
+		d.unmarshal(&fakeNode, reflect.ValueOf(v))
+		if len(d.terrors) > terrlen {
+			issues := d.terrors[terrlen:]
+			d.terrors = d.terrors[:terrlen]
+			return &TypeError{issues}
+		}
+		return nil
+	})
+	if e, ok := err.(*TypeError); ok {
+		d.terrors = append(d.terrors, e.Errors...)
+		return nil, false
+	}
+	if err != nil {
+		fail(err)
+	}
+
+	return result, true
+}
+
 // d.prepare initializes and dereferences pointers and calls UnmarshalYAML
 // if a value is found to implement it.
 // It returns the initialized and dereferenced out value, whether
@@ -308,6 +342,16 @@ func (d *decoder) prepare(n *node, out reflect.Value) (newout reflect.Value, unm
 			}
 		}
 	}
+
+	if ctu, ok := d.customTagUnmarshalers[n.tag]; ok {
+		result, good := d.callCustomTagUnmarshaler(n, ctu)
+		// TODO make sure that it's actually Settable...
+		// (Set can go pear-shaped in multiple ways)
+		reflectedResult := reflect.ValueOf(result)
+		out.Set(reflectedResult)
+		return out, true, good
+	}
+
 	return out, false, false
 }
 
@@ -322,6 +366,7 @@ func (d *decoder) unmarshal(n *node, out reflect.Value) (good bool) {
 	if unmarshaled {
 		return good
 	}
+
 	switch n.kind {
 	case scalarNode:
 		good = d.scalar(n, out)
@@ -332,6 +377,7 @@ func (d *decoder) unmarshal(n *node, out reflect.Value) (good bool) {
 	default:
 		panic("internal error: unknown node kind: " + strconv.Itoa(n.kind))
 	}
+
 	return good
 }
 

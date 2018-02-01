@@ -33,6 +33,10 @@ type Unmarshaler interface {
 	UnmarshalYAML(unmarshal func(interface{}) error) error
 }
 
+type CustomTagUnmarshaler interface {
+	UnmarshalYAML(unmarshal func(interface{}) error) (interface{}, error)
+}
+
 // The Marshaler interface may be implemented by types to customize their
 // behavior when being marshaled into a YAML document. The returned value
 // is marshaled in place of the original value implementing Marshaler.
@@ -91,8 +95,9 @@ func UnmarshalStrict(in []byte, out interface{}) (err error) {
 
 // A Decorder reads and decodes YAML values from an input stream.
 type Decoder struct {
-	strict bool
-	parser *parser
+	strict                bool
+	parser                *parser
+	customTagUnmarshalers map[string]CustomTagUnmarshaler
 }
 
 // NewDecoder returns a new decoder that reads from r.
@@ -101,7 +106,8 @@ type Decoder struct {
 // data from r beyond the YAML values requested.
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{
-		parser: newParserFromReader(r),
+		parser:                newParserFromReader(r),
+		customTagUnmarshalers: map[string]CustomTagUnmarshaler{},
 	}
 }
 
@@ -111,13 +117,17 @@ func (dec *Decoder) SetStrict(strict bool) {
 	dec.strict = strict
 }
 
+func (dec *Decoder) RegisterCustomTagUnmarshaller(tag string, ctu CustomTagUnmarshaler) {
+	dec.customTagUnmarshalers[tag] = ctu
+}
+
 // Decode reads the next YAML-encoded value from its input
 // and stores it in the value pointed to by v.
 //
 // See the documentation for Unmarshal for details about the
 // conversion of YAML into a Go value.
 func (dec *Decoder) Decode(v interface{}) (err error) {
-	d := newDecoder(dec.strict)
+	d := newDecoder(dec.strict, dec.customTagUnmarshalers)
 	defer handleErr(&err)
 	node := dec.parser.parse()
 	if node == nil {
@@ -136,7 +146,7 @@ func (dec *Decoder) Decode(v interface{}) (err error) {
 
 func unmarshal(in []byte, out interface{}, strict bool) (err error) {
 	defer handleErr(&err)
-	d := newDecoder(strict)
+	d := newDecoder(strict, map[string]CustomTagUnmarshaler{})
 	p := newParser(in)
 	defer p.destroy()
 	node := p.parse()

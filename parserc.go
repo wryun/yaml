@@ -2,6 +2,7 @@ package yaml
 
 import (
 	"bytes"
+	"fmt"
 )
 
 // The parser implements the following grammar:
@@ -62,6 +63,9 @@ func skip_token(parser *yaml_parser_t) {
 func yaml_parser_parse(parser *yaml_parser_t, event *yaml_event_t) bool {
 	// Erase the event object.
 	*event = yaml_event_t{}
+	defer func() {
+		fmt.Println(event)
+	}()
 
 	// No events after the end of the stream or error.
 	if parser.stream_end_produced || parser.error != yaml_NO_ERROR || parser.state == yaml_PARSE_END_STATE {
